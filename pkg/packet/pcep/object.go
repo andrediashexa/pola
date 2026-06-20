@@ -581,6 +581,8 @@ func NewSrpObject(segs []table.Segment, srpID uint32, isRemove bool) (*SrpObject
 		o.TLVs = append(o.TLVs, &PathSetupType{PathSetupType: PathSetupTypeSRTE})
 	} else if _, ok := segs[0].(table.SegmentSRv6); ok {
 		o.TLVs = append(o.TLVs, &PathSetupType{PathSetupType: PathSetupTypeSRv6TE})
+	} else if _, ok := segs[0].(table.SegmentRSVPIPv4); ok {
+		o.TLVs = append(o.TLVs, &PathSetupType{PathSetupType: PathSetupTypeRSVPTE})
 	} else {
 		return nil, errors.New("invalid Segment type")
 	}
@@ -744,6 +746,8 @@ func (o *EroObject) DecodeFromBytes(typ ObjectType, objectBody []uint8) error {
 	for {
 		var eroSubobj EroSubobject
 		switch SubObjectType(objectBody[0] & 0x7f) {
+		case SubObjectTypeEROIPv4Prefix:
+			eroSubobj = &IPv4EroSubobject{}
 		case SubObjectTypeEROSR:
 			eroSubobj = &SREroSubobject{}
 		case SubObjectTypeEROSRv6:
@@ -850,6 +854,12 @@ func NewEroSubobject(seg table.Segment) (EroSubobject, error) {
 		return subo, nil
 	} else if v, ok := seg.(table.SegmentSRv6); ok {
 		subo, err := NewSRv6EroSubObject(v)
+		if err != nil {
+			return nil, err
+		}
+		return subo, nil
+	} else if v, ok := seg.(table.SegmentRSVPIPv4); ok {
+		subo, err := NewIPv4EroSubObject(v)
 		if err != nil {
 			return nil, err
 		}
