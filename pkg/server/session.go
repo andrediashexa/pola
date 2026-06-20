@@ -494,8 +494,32 @@ func (ss *Session) SendOpen() error {
 	return ss.sendPCEPMessage(openMessage)
 }
 
+// rsvpHops returns the segment list as RSVP-TE IPv4 hops if (and only if) every
+// segment is one; otherwise nil. Used to route to the RSVP-TE message builders.
+func rsvpHops(sl []table.Segment) []table.SegmentRSVPIPv4 {
+	if len(sl) == 0 {
+		return nil
+	}
+	hops := make([]table.SegmentRSVPIPv4, 0, len(sl))
+	for _, s := range sl {
+		v, ok := s.(table.SegmentRSVPIPv4)
+		if !ok {
+			return nil
+		}
+		hops = append(hops, v)
+	}
+	return hops
+}
+
 func (ss *Session) SendPCInitiate(srPolicy table.SRPolicy, lspDelete bool) error {
-	pcinitiateMessage, err := pcep.NewPCInitiateMessage(ss.srpIDHead, srPolicy.Name, lspDelete, srPolicy.PlspID, srPolicy.SegmentList, srPolicy.Color, srPolicy.Preference, srPolicy.SrcAddr, srPolicy.DstAddr, pcep.VendorSpecific(ss.pccType))
+	var pcinitiateMessage *pcep.PCInitiateMessage
+	var err error
+	if hops := rsvpHops(srPolicy.SegmentList); hops != nil {
+		// RSVP-TE LSP: SRP(PST=0) + LSP + ENDPOINTS + loose IPv4 ERO.
+		pcinitiateMessage, err = pcep.NewPCInitiateMessageRSVP(ss.srpIDHead, srPolicy.Name, lspDelete, srPolicy.PlspID, hops, srPolicy.SrcAddr, srPolicy.DstAddr)
+	} else {
+		pcinitiateMessage, err = pcep.NewPCInitiateMessage(ss.srpIDHead, srPolicy.Name, lspDelete, srPolicy.PlspID, srPolicy.SegmentList, srPolicy.Color, srPolicy.Preference, srPolicy.SrcAddr, srPolicy.DstAddr, pcep.VendorSpecific(ss.pccType))
+	}
 	if err != nil {
 		return err
 	}
@@ -508,7 +532,13 @@ func (ss *Session) SendPCInitiate(srPolicy table.SRPolicy, lspDelete bool) error
 }
 
 func (ss *Session) SendPCUpdate(srPolicy table.SRPolicy) error {
-	pcupdateMessage, err := pcep.NewPCUpdMessage(ss.srpIDHead, srPolicy.Name, srPolicy.PlspID, srPolicy.SegmentList)
+	var pcupdateMessage *pcep.PCUpdMessage
+	var err error
+	if hops := rsvpHops(srPolicy.SegmentList); hops != nil {
+		pcupdateMessage, err = pcep.NewPCUpdMessageRSVP(ss.srpIDHead, srPolicy.Name, srPolicy.PlspID, hops)
+	} else {
+		pcupdateMessage, err = pcep.NewPCUpdMessage(ss.srpIDHead, srPolicy.Name, srPolicy.PlspID, srPolicy.SegmentList)
+	}
 	if err != nil {
 		return err
 	}

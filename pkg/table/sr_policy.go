@@ -9,6 +9,7 @@ import (
 	"errors"
 	"net/netip"
 	"strconv"
+	"strings"
 )
 
 // sr-policy state
@@ -93,6 +94,22 @@ type Segment interface {
 }
 
 func NewSegment(sid string) (Segment, error) {
+	// RSVP-TE hop: "rsvp:<ipv4>" (loose, default) or "rsvp-strict:<ipv4>".
+	// Lets the SR-policy gRPC/CLI carry RSVP-TE explicit-route hops without a new
+	// proto message — the path-setup-type is inferred from the segment type.
+	if rest, ok := strings.CutPrefix(sid, "rsvp:"); ok {
+		if a, err := netip.ParseAddr(rest); err == nil && a.Is4() {
+			return NewSegmentRSVPIPv4(a, true), nil
+		}
+		return nil, errors.New("invalid rsvp: IPv4 hop")
+	}
+	if rest, ok := strings.CutPrefix(sid, "rsvp-strict:"); ok {
+		if a, err := netip.ParseAddr(rest); err == nil && a.Is4() {
+			return NewSegmentRSVPIPv4(a, false), nil
+		}
+		return nil, errors.New("invalid rsvp-strict: IPv4 hop")
+	}
+
 	addr, err := netip.ParseAddr(sid)
 	if err == nil && addr.Is6() {
 		return NewSegmentSRv6(addr), nil
