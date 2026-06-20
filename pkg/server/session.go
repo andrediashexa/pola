@@ -129,6 +129,7 @@ func (ss *Session) parseOpenMessage() (*pcep.OpenMessage, error) {
 		return nil, err
 	}
 
+	ss.logger.Warn("Receive Open Message", zap.String("hex", fmt.Sprintf("%x", append(byteOpenHeader, byteOpenObject...))))
 	var openMessage pcep.OpenMessage
 	if err := openMessage.DecodeFromBytes(byteOpenObject); err != nil {
 		return nil, err
@@ -526,7 +527,9 @@ func (ss *Session) SendOpen() error {
 	if err != nil {
 		return err
 	}
-	ss.logger.Debug("Send Open Message")
+	if b, e := openMessage.Serialize(); e == nil {
+		ss.logger.Warn("Send Open Message", zap.String("hex", fmt.Sprintf("%x", b)))
+	}
 	return ss.sendPCEPMessage(openMessage)
 }
 
