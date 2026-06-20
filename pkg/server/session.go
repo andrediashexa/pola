@@ -8,6 +8,7 @@ package server
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"time"
@@ -107,7 +108,7 @@ func (ss *Session) Open() error {
 
 func (ss *Session) parseOpenMessage() (*pcep.OpenMessage, error) {
 	byteOpenHeader := make([]uint8, pcep.CommonHeaderLength)
-	if _, err := ss.tcpConn.Read(byteOpenHeader); err != nil {
+	if _, err := io.ReadFull(ss.tcpConn, byteOpenHeader); err != nil {
 		return nil, err
 	}
 
@@ -124,7 +125,7 @@ func (ss *Session) parseOpenMessage() (*pcep.OpenMessage, error) {
 	}
 
 	byteOpenObject := make([]uint8, openHeader.MessageLength-pcep.CommonHeaderLength)
-	if _, err := ss.tcpConn.Read(byteOpenObject); err != nil {
+	if _, err := io.ReadFull(ss.tcpConn, byteOpenObject); err != nil {
 		return nil, err
 	}
 
@@ -198,21 +199,25 @@ func (ss *Session) ReceivePCEPMessage() error {
 			}
 		case pcep.MessageTypeError:
 			bytePCErrMessageBody := make([]uint8, commonHeader.MessageLength-pcep.CommonHeaderLength)
-			if _, err := ss.tcpConn.Read(bytePCErrMessageBody); err != nil {
+			if _, err := io.ReadFull(ss.tcpConn, bytePCErrMessageBody); err != nil {
 				return err
 			}
 			pcerrMessage := &pcep.PCErrMessage{}
 			if err := pcerrMessage.DecodeFromBytes(bytePCErrMessageBody); err != nil {
-				return err
+				// Body already consumed (io.ReadFull) -> stream aligned. Don't tear
+				// down the session over an unparseable PCErr; log the raw bytes.
+				ss.logger.Warn("failed to decode PCErr; skipping (session kept up)",
+					zap.Error(err), zap.String("raw", fmt.Sprintf("%x", bytePCErrMessageBody)))
+				continue
 			}
 
-			ss.logger.Debug("Received PCErr",
+			ss.logger.Warn("Received PCErr from PCC",
 				zap.Uint8("error-Type", pcerrMessage.PCEPErrorObject.ErrorType),
 				zap.Uint8("error-value", pcerrMessage.PCEPErrorObject.ErrorValue),
 				zap.String("detail", "See https://www.iana.org/assignments/pcep/pcep.xhtml#pcep-error-object"))
 		case pcep.MessageTypeClose:
 			byteCloseMessageBody := make([]uint8, commonHeader.MessageLength-pcep.CommonHeaderLength)
-			if _, err := ss.tcpConn.Read(byteCloseMessageBody); err != nil {
+			if _, err := io.ReadFull(ss.tcpConn, byteCloseMessageBody); err != nil {
 				return err
 			}
 			closeMessage := &pcep.CloseMessage{}
@@ -233,7 +238,7 @@ func (ss *Session) ReceivePCEPMessage() error {
 
 func (ss *Session) readCommonHeader() (*pcep.CommonHeader, error) {
 	commonHeaderBytes := make([]uint8, pcep.CommonHeaderLength)
-	if _, err := ss.tcpConn.Read(commonHeaderBytes); err != nil {
+	if _, err := io.ReadFull(ss.tcpConn, commonHeaderBytes); err != nil {
 		return nil, err
 	}
 
@@ -249,13 +254,19 @@ func (ss *Session) handlePCRpt(length uint16) error {
 	ss.logger.Debug("Received PCRpt Message")
 
 	messageBodyBytes := make([]uint8, length-pcep.CommonHeaderLength)
-	if _, err := ss.tcpConn.Read(messageBodyBytes); err != nil {
+	if _, err := io.ReadFull(ss.tcpConn, messageBodyBytes); err != nil {
 		return err
 	}
 
 	message := pcep.NewPCRptMessage()
 	if err := message.DecodeFromBytes(messageBodyBytes); err != nil {
-		return err
+		// The full message body was already consumed (io.ReadFull above), so the
+		// TCP stream stays aligned. A decode failure on one PCRpt (e.g. an
+		// RSVP-TE report with an object/TLV POLA doesn't fully model yet) must
+		// NOT tear down the session — that would drop PCE-initiated LSPs. Log and
+		// keep going.
+		ss.logger.Warn("failed to decode PCRpt; skipping message (session kept up)", zap.Error(err))
+		return nil
 	}
 
 	for _, sr := range message.StateReports {
@@ -315,9 +326,34 @@ func (ss *Session) handleStatefulPCERequest(sr *pcep.StateReport) error {
 	return nil
 }
 
+// reportIsRSVP reports whether the LSP in this StateReport is RSVP-TE — i.e. its
+// reported ERO is made of IPv4 prefix subobjects (RFC 3209), not SR segments.
+func reportIsRSVP(sr *pcep.StateReport) bool {
+	if sr.EroObject == nil {
+		return false
+	}
+	for _, so := range sr.EroObject.EroSubobjects {
+		if _, ok := so.(*pcep.IPv4EroSubobject); ok {
+			return true
+		}
+	}
+	return false
+}
+
 // Receive SR Policy with PLSP-ID
 func (ss *Session) handleSRPolicyWithPLSPID(sr *pcep.StateReport) error {
 	ss.logger.Debug("Received SR Policy", zap.Uint32("plspID", sr.LSPObject.PlspID))
+
+	// RSVP-TE LSPs (the PCC computes/expands the path itself) and TED-less
+	// deployments must NOT be recomputed/re-steered from the TED — that would
+	// fail and close the session. Just track the reported LSP and keep going.
+	if ss.ted == nil || reportIsRSVP(sr) {
+		if err := ss.RegisterSRPolicy(*sr); err != nil {
+			ss.logger.Error("Failed to register LSP", zap.Error(err), zap.Uint32("plspID", sr.LSPObject.PlspID))
+			return err
+		}
+		return nil
+	}
 
 	computedSegmentList, err := ss.computePathFromTED(*sr)
 	if err != nil {
@@ -560,7 +596,12 @@ func (ss *Session) RegisterSRPolicy(sr pcep.StateReport) error {
 	// Validate Segment List
 	segmentList, err := validateSegmentList(sr)
 	if err != nil {
-		return err
+		// A reported LSP whose ERO has no segments POLA can model (e.g. an
+		// RSVP-TE tunnel the PCC reports during sync, or a down LSP with an
+		// empty ERO) must NOT fail synchronization — that would close the PCEP
+		// session and loop forever. Skip tracking it; keep the session up.
+		ss.logger.Debug("skipping LSP with no usable segment list (RSVP-TE/empty ERO)", zap.Error(err), zap.Uint32("plspID", sr.LSPObject.PlspID))
+		return nil
 	}
 
 	// Update existing policy or create a new one

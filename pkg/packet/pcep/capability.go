@@ -33,6 +33,22 @@ func PolaCapability(caps []CapabilityInterface) []CapabilityInterface {
 				Relax:                          false,
 			}
 			polaCaps = append(polaCaps, tlv)
+		case *PathSetupTypeCapability:
+			// Advertise RSVP-TE (PST 0) in addition to whatever the PCC offered
+			// (e.g. SR-TE), so the PCC accepts PCE-initiated RSVP-TE LSPs. Without
+			// it the Huawei VRP rejects RSVP-TE PCInitiate with Error-Type 2
+			// (capability not supported). SR-TE/SRv6 PSTs are preserved.
+			hasRSVP := false
+			for _, p := range tlv.PathSetupTypes {
+				if p == PathSetupTypeRSVPTE {
+					hasRSVP = true
+					break
+				}
+			}
+			if !hasRSVP {
+				tlv.PathSetupTypes = append(Psts{PathSetupTypeRSVPTE}, tlv.PathSetupTypes...)
+			}
+			polaCaps = append(polaCaps, tlv)
 		case *LSPDBVersion:
 			continue
 		default:

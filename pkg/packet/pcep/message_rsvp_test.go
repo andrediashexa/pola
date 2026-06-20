@@ -29,15 +29,16 @@ func TestNewPCInitiateMessageRSVP(t *testing.T) {
 	m, err := NewPCInitiateMessageRSVP(1, "RSVP-LSP-1", false, 0, hops, src, dst)
 	assert.NoError(t, err)
 
-	// SRP carries PATH-SETUP-TYPE = RSVP-TE (0).
+	// SRP carries NO PATH-SETUP-TYPE TLV for RSVP-TE: per RFC 8408 an absent PST
+	// defaults to RSVP-TE (0), and an explicit PST=0 makes some Huawei VRP PCCs
+	// reject the PCInitiate (Error-Type 2). So the SRP must have no PST TLV.
 	var pst *PathSetupType
 	for _, tlv := range m.SrpObject.TLVs {
 		if v, ok := tlv.(*PathSetupType); ok {
 			pst = v
 		}
 	}
-	assert.NotNil(t, pst)
-	assert.Equal(t, PathSetupTypeRSVPTE, pst.PathSetupType)
+	assert.Nil(t, pst, "RSVP-TE SRP must omit the PATH-SETUP-TYPE TLV")
 
 	// ENDPOINTS present; no SR-policy ASSOCIATION/VENDOR objects.
 	assert.NotNil(t, m.EndpointsObject)

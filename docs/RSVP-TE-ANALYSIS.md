@@ -139,3 +139,33 @@ o risco é encoding/interop, não conceito.
 `rsvp-tunnel`, ligando os construtores acima na sessão (`pkg/server/session.go`).
 Depois **F4** — teste ao vivo contra a NE8000 da SOS (apontar `connect-server`
 da caixa pro POLA; POLA pode rodar paralelo ao ODL). Mandar **loose**.
+
+## Teste ao vivo contra a NE8000 da SOS (2026-06-20)
+
+Setup: `polad` em container (ipvlan, IPv6 `::f168`, TED desabilitada), 2º
+`connect-server` na caixa SOS apontando pro POLA (paralelo ao ODL).
+
+**Funcionou:**
+- ✅ A NE8000 **conecta** no POLA (sessão PCEP IPv6), Open/Keepalive, **sync** dos
+  túneis existentes (666/667/668), `IsSynced: true`.
+- ✅ POLA **envia o PCInitiate RSVP-TE** (ERO IPv4 loose) — `pola sr-policy add`
+  (disable-path-compute) com SIDs `rsvp:<ip>` via gRPC (`SidValidate: true`).
+- ✅ Sessão **robusta**: `io.ReadFull` (corrige read parcial de PCRpt grande) +
+  tolerância a erro de decode (PCRpt/PCErr) + sync RSVP-aware. A sessão **não
+  cai** mais (closes=0), preservando LSPs PCE-initiated.
+
+**Bloqueio atual (interop de capability):**
+- 🔴 A caixa **rejeita** o PCInitiate RSVP com **PCErr Error-Type 2 (capability
+  not supported)** — raw `2110000c...0d10000800000200`.
+- Tentado sem sucesso: omitir PST, PST=0 explícito, anunciar RSVP-TE no
+  PATH-SETUP-TYPE-CAPABILITY do Open.
+- **Próximo passo:** capturar e comparar o **Open do POLA** vs o **Open do ODL**
+  (que a caixa aceitou pra RSVP-init) — a diferença na negociação de capability é
+  a chave. Provável: alguma flag/TLV de capability que o ODL anuncia e o POLA não
+  (ou um objeto do PCInitiate que a caixa lê como não-suportado).
+
+**Robustez (vale pra SR também, não quebra nada):**
+- `pkg/server/session.go`: `io.ReadFull` em todas as leituras PCEP; decode de
+  PCRpt/PCErr não-fatal; `handleSRPolicyWithPLSPID` não recomputa TED pra RSVP/
+  sem-TED; `RegisterSRPolicy` pula LSP sem segment-list usável.
+- `pkg/packet/pcep/capability.go`: anuncia RSVP-TE PST (preserva SR-TE/SRv6).

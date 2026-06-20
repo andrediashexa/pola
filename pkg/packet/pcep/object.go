@@ -582,7 +582,10 @@ func NewSrpObject(segs []table.Segment, srpID uint32, isRemove bool) (*SrpObject
 	} else if _, ok := segs[0].(table.SegmentSRv6); ok {
 		o.TLVs = append(o.TLVs, &PathSetupType{PathSetupType: PathSetupTypeSRv6TE})
 	} else if _, ok := segs[0].(table.SegmentRSVPIPv4); ok {
-		o.TLVs = append(o.TLVs, &PathSetupType{PathSetupType: PathSetupTypeRSVPTE})
+		// RSVP-TE: omit the PATH-SETUP-TYPE TLV. Per RFC 8408 an absent PST means
+		// RSVP-TE (0) by default; sending an explicit PST=0 makes some Huawei VRP
+		// PCCs reject the PCInitiate with Error-Type 2 (capability not supported)
+		// when they didn't negotiate the PST capability for that session.
 	} else {
 		return nil, errors.New("invalid Segment type")
 	}
