@@ -123,7 +123,19 @@ o risco é encoding/interop, não conceito.
 - TED via GoBGP (o mesmo que já usamos).
 - Roadmap natural: depois agrega o SR/SRv6 nativo do POLA se a rede migrar.
 
-## Próximo passo concreto
-Começar pela **F1**: implementar `IPv4EroSubobject` + `SegmentRSVPIPv4` + branch
-PST, com testes de serialização (comparar bytes com a RFC 3209). É a base de tudo
-e é testável offline (sem caixa). Stub inicial nesta branch.
+## Progresso nesta branch
+
+- **F1 ✅** — `SegmentRSVPIPv4` (`pkg/table/rsvp.go`) + `IPv4EroSubobject` (RFC
+  3209, `pkg/packet/pcep/ero_ipv4.go`, L-flag=loose) + decode `case 0x01` +
+  `NewEroSubobject`/`NewSrpObject` (PST=RSVPTE). Testes: serialize loose=`0x81`/
+  strict=`0x01`, round-trip, ERO completo.
+- **F2 ✅** — construtores `NewPCInitiateMessageRSVP` / `NewPCUpdMessageRSVP`
+  (`pkg/packet/pcep/message_rsvp.go`): SRP(PST=0) + LSP + ENDPOINTS + ERO IPv4
+  loose, **sem** ASSOCIATION/VENDOR (esses são SR-policy). BANDWIDTH pulado no
+  MVP (loose sem reserva, igual o fluxo loose validado com ODL). Testes de
+  estrutura + serialização. `go build ./...` OK.
+
+**Próximo: F3** — modelo `RsvpTunnel` + gRPC (`.proto` add/list/delete) + CLI
+`rsvp-tunnel`, ligando os construtores acima na sessão (`pkg/server/session.go`).
+Depois **F4** — teste ao vivo contra a NE8000 da SOS (apontar `connect-server`
+da caixa pro POLA; POLA pode rodar paralelo ao ODL). Mandar **loose**.
